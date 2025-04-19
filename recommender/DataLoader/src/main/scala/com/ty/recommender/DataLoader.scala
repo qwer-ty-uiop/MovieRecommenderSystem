@@ -1,9 +1,9 @@
 package com.ty.recommender
 
-import com.mongodb.casbah.Imports.{MongoClient, MongoClientURI}
-import com.mongodb.casbah.commons.MongoDBObject
+import com.mongodb.client.MongoClients
 import org.apache.spark.SparkConf
 import org.apache.spark.sql.{DataFrame, SparkSession}
+import org.bson.Document
 
 /**
  * Movie 数据集
@@ -60,17 +60,17 @@ case class MongoConfig(uri: String, db: String)
  */
 case class ESConfig(httpHosts: String, transportHosts: String, index: String, clusterName: String)
 
-class DataLoader {
-  private val MOVIE_DATA_PATH = "src/main/resources/movies.csv"
-  private val RATING_DATA_PATH = "src/main/resources/ratings.csv"
-  private val TAG_DATA_PATH = "src/main/resources/tags.csv"
+object DataLoader {
+  private val MOVIE_DATA_PATH = "recommender/DataLoader/src/main/resources/movies.csv"
+  private val RATING_DATA_PATH = "recommender/DataLoader/src/main/resources/ratings.csv"
+  private val TAG_DATA_PATH = "recommender/DataLoader/src/main/resources/tags.csv"
   private val MONGODB_MOVIE_COLLECTION = "Movie"
   private val MONGODB_RATING_COLLECTION = "Rating"
   private val MONGODB_TAG_COLLECTION = "Tag"
-  val ES_MOVIE_INDEX = "Movie"
+  private val ES_MOVIE_INDEX = "_doc"
 
   def main(args: Array[String]): Unit = {
-    val config = Map(
+    val config: Map[String, String] = Map(
       "spark.cores" -> "local[*]",
       "mongo.uri" -> "mongodb://localhost:27017/recommender",
       "mongo.db" -> "recommender",
@@ -79,8 +79,14 @@ class DataLoader {
       "es.index" -> "recommender",
       "es.cluster.name" -> "elasticsearch"
     )
+    implicit val mongoConfig: MongoConfig = MongoConfig(config("mongo.uri"), config("mongo.db"))
+    implicit val esConfig: ESConfig = ESConfig(config("es.httpHosts"), config("es.transportHosts"), config("es.index"), config("es.cluster.name"))
     // 创建 sparkConf
-    val sparkConf = new SparkConf().setMaster(config("spark.cores")).setAppName("DataLoader")
+    val sparkConf = new SparkConf()
+      .setMaster(config("spark.cores"))
+      .set("es.net.http.auth.user", "elastic")
+      .set("es.net.http.auth.pass", "elastic")
+      .setAppName("DataLoader")
     // 创建 sparkSession
     val sparkSession = new SparkSession.Builder().config(sparkConf).getOrCreate()
     // 引入 sparkSession 隐式包
@@ -91,12 +97,12 @@ class DataLoader {
     val movieDF = movieRDD.map(
       item => {
         val parts = item.split("\\^")
-        Movies(parts(0).toInt, parts(1).strip(), parts(2).strip(), parts(3).strip(), parts(4).strip(), parts(5).strip(), parts(6).strip(), parts(7).strip(), parts(8).strip(), parts(9).strip())
+        Movies(parts(0).toInt, parts(1).trim, parts(2).trim, parts(3).trim, parts(4).trim, parts(5).trim, parts(6).trim, parts(7).trim, parts(8).trim, parts(9).trim)
       }
     ).toDF()
 
     val ratingRDD = sparkSession.sparkContext.textFile(RATING_DATA_PATH)
-    val ratingDF = movieRDD.map(
+    val ratingDF = ratingRDD.map(
       item => {
         val parts = item.split(",")
         Ratings(parts(0).toInt, parts(1).toInt, parts(2).toDouble, parts(3).toLong)
@@ -104,28 +110,39 @@ class DataLoader {
     ).toDF()
 
     val tagRDD = sparkSession.sparkContext.textFile(TAG_DATA_PATH)
-    val tagDF = movieRDD.map(
+    val tagDF = tagRDD.map(
       item => {
-        val parts = item.split("\\^")
-        Tags(parts(0).toInt, parts(1).toInt, parts(2).strip(), parts(3).toLong)
+        val parts = item.split(",")
+        Tags(parts(0).toInt, parts(1).toInt, parts(2).trim, parts(3).toLong)
       }
     ).toDF()
     // 保存到 mongoDB
-    implicit val mongoConfig: MongoConfig = MongoConfig(config("mongo.uri"), config("mongo.db"))
     saveToMongoDB(movieDF, ratingDF, tagDF)
+
+    // 预处理，把 tag 集成到 movie 数据中
+    import org.apache.spark.sql.functions._
+
+    val newTag = tagDF.groupBy($"mId")
+      .agg(concat_ws("|", collect_set($"tag")).as("tags"))
+      .select("mId", "tags")
+
+    // 对 newTag 和 movie 做 join 操作
+    val movieWithTagDF = movieDF.join(newTag, Seq("mId"), "left")
+
     // 保存到 elasticsearch
-    saveToES()
+    saveToES(movieWithTagDF)
     // 关闭 sparkSession
     sparkSession.stop()
   }
 
   private def saveToMongoDB(movieDF: DataFrame, ratingDF: DataFrame, tagDF: DataFrame)(implicit mongoConfig: MongoConfig): Unit = {
     // 新建一个 mongodb 的连接
-    val mongoClient = MongoClient(MongoClientURI(mongoConfig.uri))
+    val mongoClient = MongoClients.create(mongoConfig.uri)
+    val database = mongoClient.getDatabase(mongoConfig.db)
     // 如果 mongodb 已经有了相应的数据库，需要先删除
-    mongoClient(mongoConfig.db)(MONGODB_MOVIE_COLLECTION).dropCollection()
-    mongoClient(mongoConfig.db)(MONGODB_RATING_COLLECTION).dropCollection()
-    mongoClient(mongoConfig.db)(MONGODB_TAG_COLLECTION).dropCollection()
+    database.getCollection(MONGODB_MOVIE_COLLECTION).drop()
+    database.getCollection(MONGODB_RATING_COLLECTION).drop()
+    database.getCollection(MONGODB_TAG_COLLECTION).drop()
     // 将 df 写入对应的 mongodb 表中
     movieDF.write
       .option("uri", mongoConfig.uri)
@@ -148,16 +165,23 @@ class DataLoader {
       .format("com.mongodb.spark.sql")
       .save()
     // 建立索引
-    mongoClient(mongoConfig.db)(MONGODB_MOVIE_COLLECTION).createIndex(MongoDBObject("mId" -> 1))
-    mongoClient(mongoConfig.db)(MONGODB_RATING_COLLECTION).createIndex(MongoDBObject("uId" -> 1))
-    mongoClient(mongoConfig.db)(MONGODB_RATING_COLLECTION).createIndex(MongoDBObject("mId" -> 1))
-    mongoClient(mongoConfig.db)(MONGODB_TAG_COLLECTION).createIndex(MongoDBObject("uId" -> 1))
-    mongoClient(mongoConfig.db)(MONGODB_TAG_COLLECTION).createIndex(MongoDBObject("mId" -> 1))
+    database.getCollection(MONGODB_MOVIE_COLLECTION).createIndex(new Document("mId", 1))
+    database.getCollection(MONGODB_RATING_COLLECTION).createIndex(new Document("uId", 1))
+    database.getCollection(MONGODB_RATING_COLLECTION).createIndex(new Document("mId", 1))
+    database.getCollection(MONGODB_TAG_COLLECTION).createIndex(new Document("uId", 1))
+    database.getCollection(MONGODB_TAG_COLLECTION).createIndex(new Document("mId", 1))
     mongoClient.close()
   }
 
-  private def saveToES(): Unit = {
-
+  private def saveToES(movieDF: DataFrame)(implicit esConfig: ESConfig): Unit = {
+    movieDF.write
+      .option("es.nodes", esConfig.httpHosts)
+      .option("es.http.timeout", "100m")
+      .option("es.mapping.id", "mId")
+      .option("es.index.auto.create", "true")
+      .mode("overwrite")
+      .format("org.elasticsearch.spark.sql")
+      .save(esConfig.index + "/" + ES_MOVIE_INDEX)
   }
 
 }
