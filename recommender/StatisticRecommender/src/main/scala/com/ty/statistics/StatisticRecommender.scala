@@ -89,7 +89,7 @@ object StatisticRecommender {
       .mapGroups { (genres, iter) =>
         val topMovies = iter
           .map(_._2)
-          .toArray
+          .toList
           .sortBy(-_._2)
           .take(10)
           .map { case (mId, score) => Recommendation(mId, score) }
