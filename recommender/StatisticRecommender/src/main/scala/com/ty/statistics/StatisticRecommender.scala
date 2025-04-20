@@ -39,7 +39,7 @@ object StatisticRecommender {
     implicit val mongoConfig: MongoConfig = MongoConfig(config("mongo.uri"), config("mongo.db"))
     val sparkConf = new SparkConf()
       .setMaster(config("spark.cores"))
-      .setAppName("DataLoader")
+      .setAppName("StatisticRecommender")
     val sparkSession = new SparkSession.Builder().config(sparkConf).getOrCreate()
     import sparkSession.implicits._
     // 从 mongo 中加载数据
@@ -89,7 +89,7 @@ object StatisticRecommender {
       .mapGroups { (genres, iter) =>
         val topMovies = iter
           .map(_._2)
-          .toArray
+          .toList
           .sortBy(-_._2)
           .take(10)
           .map { case (mId, score) => Recommendation(mId, score) }
