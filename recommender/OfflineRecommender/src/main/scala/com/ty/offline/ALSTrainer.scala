@@ -51,7 +51,7 @@ object ALSTrainer {
   }
 
   private def tuneModelParameters(trainRDD: RDD[Rating], testRDD: RDD[Rating]): Unit = {
-    val result = for (rank <- Array(10, 20, 50); regularization <- Array(0.0001, 0.001, 0.1))
+    val result = for (rank <- Array(50, 100, 200); regularization <- Array(0.0001, 0.001, 0.1))
       yield {
         val model = ALS.train(trainRDD, rank, 5, regularization)
         val RMSE = getRMSE(model, testRDD)

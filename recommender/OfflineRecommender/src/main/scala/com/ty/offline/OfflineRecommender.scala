@@ -30,10 +30,10 @@ object OfflineRecommender {
     val config: Map[String, String] = Map(
       "spark.cores" -> "local[*]",
       "mongo.uri" -> "mongodb://localhost:27017/recommender",
-      "mongo.db" -> "recommender",
-      "rank" -> "50",
+      "mongo.db" -> "recommender", a
+      "rank" -> "100",
       "iterations" -> "5",
-      "regularization" -> "0.01"
+      "regularization" -> "0.1"
     )
     implicit val mongoConfig: MongoConfig = MongoConfig(config("mongo.uri"), config("mongo.db"))
     val sparkConf = new SparkConf()
