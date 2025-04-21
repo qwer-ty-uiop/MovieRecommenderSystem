@@ -20,7 +20,7 @@ case class MovieRecommendations(mId: Int, recommendations: Seq[Recommendation])
 
 object OfflineRecommender {
 
-  private val MONGODB_RATING_COLLECTION = "Rating"
+  val MONGODB_RATING_COLLECTION = "Rating"
   private val MONGODB_USER_RECOMMENDATIONS_COLLECTION = "UserRecommendations"
   private val MONGODB_MOVIE_RECOMMENDATIONS_COLLECTION = "MovieRecommendations"
   private val USER_MAX_RECOMMENDATIONS = 20
