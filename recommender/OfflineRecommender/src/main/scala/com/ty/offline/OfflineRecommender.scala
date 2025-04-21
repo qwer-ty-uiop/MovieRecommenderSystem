@@ -3,6 +3,7 @@ package com.ty.offline
 import org.apache.spark.SparkConf
 import org.apache.spark.mllib.recommendation.{ALS, Rating}
 import org.apache.spark.sql.SparkSession
+import org.jblas.DoubleMatrix
 
 case class MovieRatings(uId: Int, mId: Int, score: Double, timestamp: Long)
 
@@ -62,6 +63,9 @@ object OfflineRecommender {
      *
      * 1. 基于用户和电影的隐特征，计算预测评分，得到用户推荐列表
      * 2. 基于电影特征，计算相似度矩阵，得到电影相似度列表
+     * rank 隐因子特征维度数
+     * iterations 交替最小二乘的迭代次数
+     * regularization 正则化系数
      */
     val (rank, iterations, regularization) = (config("rank").toInt, config("iterations").toInt, config("regularization").toDouble)
     val model = ALS.train(movieRatingRDD, rank, iterations, regularization)
@@ -91,8 +95,49 @@ object OfflineRecommender {
       .save()
 
     /**
-     * TODO: 计算电影相似度，得到电影相似度列表
+     * TODO: 计算电影相似度，得到电影相似度推荐列表
+     *
+     * 1. 从训练的模型获取特征向量，转换成 jblas 的矩阵
+     * 2. 做相似度计算，整合相似度推荐列表
      */
+    val movieFeatures = model.productFeatures
+      .map { case (mId, features) => (mId, new DoubleMatrix(features)) }
+
+    // 做笛卡尔积，过滤自己和自己的笛卡尔积，然后计算两两电影的余弦相似度
+    val movieRecommendations = movieFeatures.cartesian(movieFeatures)
+      .filter { case (movieA, movieB) => movieA._1 != movieB._1 } // 将 mId 相同的电影过滤掉
+      .map {
+        case (movieA, movieB) =>
+          val similarScore = this.cosSimilarity(movieA._2, movieB._2)
+          (movieA._1, (movieB._1, similarScore))
+      }
+      .filter(_._2._2 > 0.6) // 过滤出相似度大于 0.6 的电影
+      .groupByKey()
+      .map {
+        case (mId, recommendations) =>
+          MovieRecommendations(mId,
+            recommendations
+              .toList
+              .sortWith(_._2 > _._2)
+              .map(x => Recommendation(x._1, x._2)))
+      }.toDF()
+
+    // 写入 mongodb
+    movieRecommendations.write
+      .option("uri", mongoConfig.uri)
+      .option("collection", MONGODB_MOVIE_RECOMMENDATIONS_COLLECTION)
+      .mode("overwrite")
+      .format("com.mongodb.spark.sql")
+      .save()
     sparkSession.stop()
+  }
+
+  /**
+   * 求向量的余弦相似度
+   * @param movieA 电影 A 的隐因子特征向量
+   * @param movieB 电影 B 的隐因子特征向量
+   */
+  private def cosSimilarity(movieA: DoubleMatrix, movieB: DoubleMatrix): Double = {
+    movieA.dot(movieB) / (movieA.norm2() * movieB.norm2())
   }
 }
