@@ -9,7 +9,7 @@
         <version>1.0-SNAPSHOT</version>
     </parent>
 
-    <artifactId>OfflineRecommender</artifactId>
+    <artifactId>OnlineRecommender</artifactId>
 
     <properties>
         <maven.compiler.source>8</maven.compiler.source>
@@ -18,12 +18,6 @@
     </properties>
 
     <dependencies>
-        <!--java 线性代数相关库，用于计算相似度矩阵-->
-        <dependency>
-            <groupId>org.scalanlp</groupId>
-            <artifactId>jblas</artifactId>
-            <version>${jblas.version}</version>
-        </dependency>
         <!-- Spark的依赖引入 -->
         <dependency>
             <groupId>org.apache.spark</groupId>
@@ -35,7 +29,7 @@
         </dependency>
         <dependency>
             <groupId>org.apache.spark</groupId>
-            <artifactId>spark-mllib_2.11</artifactId>
+            <artifactId>spark-streaming_2.11</artifactId>
         </dependency>
         <!-- 引入Scala -->
         <dependency>
@@ -52,6 +46,23 @@
             <groupId>org.mongodb.spark</groupId>
             <artifactId>mongo-spark-connector_2.11</artifactId>
             <version>${mongodb-spark.version}</version>
+        </dependency>
+        <!--引入 redis 依赖-->
+        <dependency>
+            <groupId>redis.clients</groupId>
+            <artifactId>jedis</artifactId>
+            <version>${redis.version}</version>
+        </dependency>
+        <!--引入 kafka 依赖-->
+        <dependency>
+            <groupId>org.apache.kafka</groupId>
+            <artifactId>kafka-clients</artifactId>
+            <version>${kafka.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>org.apache.spark</groupId>
+            <artifactId>spark-streaming-kafka-0-10-assembly_2.11</artifactId>
+            <version>${spark.version}</version>
         </dependency>
     </dependencies>
 
