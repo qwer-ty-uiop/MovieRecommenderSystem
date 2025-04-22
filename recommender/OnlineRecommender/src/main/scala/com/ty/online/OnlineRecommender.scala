@@ -11,6 +11,7 @@ import org.bson.Document
 import redis.clients.jedis.Jedis
 
 import scala.collection.JavaConversions._
+import scala.collection.JavaConverters._
 import scala.math.log
 
 // 推荐对象类
@@ -21,8 +22,8 @@ case class MovieRecommendations(mId: Int, recommendations: Seq[Recommendation])
 
 // mongodb 连接助手
 object ConnectHelper extends Serializable {
-  lazy val jedis = new Jedis("localhost")
-  lazy val mongoClient: MongoClient = MongoClients.create("mongodb://localhost:27010/recommender")
+  lazy val jedis = new Jedis("192.168.207.202")
+  lazy val mongoClient: MongoClient = MongoClients.create("mongodb://localhost:27017/recommender")
 }
 
 object OnlineRecommender {
@@ -37,7 +38,7 @@ object OnlineRecommender {
     // 初始化配置信息
     implicit val config: Map[String, String] = Map(
       "spark.cores" -> "local[*]",
-      "mongo.uri" -> "mongodb://localhost:27010/recommender",
+      "mongo.uri" -> "mongodb://localhost:27017/recommender",
       "mongo.db" -> "recommender",
       "kafka.topic" -> "recommender"
     )
@@ -62,11 +63,11 @@ object OnlineRecommender {
     val movieSimilarityBroadcast = sparkSession.sparkContext.broadcast(movieSimilarityRDD)
     // 定义 kafka 连接参数
     val kafkaParam = Map(
-      "bootstrap.servers" -> "localhost:9092",
+      "bootstrap.servers" -> "192.168.207.202:9092",
       "key.deserializer" -> classOf[StringDeserializer],
       "value.deserializer" -> classOf[StringDeserializer],
       "group.id" -> "recommender",
-      "auto,offset.reset" -> "latest"
+      "auto.offset.reset" -> "latest"
     )
     // 通过 kafka 创建 DStream （输入数据流）
     val kafkaDStream = KafkaUtils.createDirectStream[String, String](
@@ -96,10 +97,19 @@ object OnlineRecommender {
             println("-----------------------------Rating Data Coming Soon-----------------------------")
             // 获取用户最近的评分
             val userRecentComment = getUserRecentComment(uId, USER_MAX_COMMENT_NUM, ConnectHelper.jedis)
+
+            println(userRecentComment.mkString("user recentComment (mId, score): ", ", ", ""))
+
             // 相似矩阵已经放入广播变量中了；uId 用于过滤已经看过的电影；需要进入 mongodb 中查看已经评分过的电影
             val alternativeMovies = getAlternativeMovies(uId, mId, movieSimilarityBroadcast.value, MOVIE_MAX_SIMILARITY_NUM)
+
+            println(alternativeMovies.mkString("alternative movies (mId): ", ", ", ""))
+
             // 获取推荐列表
             val curRecommendations = calculateMoviePriority(userRecentComment, alternativeMovies, movieSimilarityBroadcast.value)
+
+            println(curRecommendations.mkString("recommended movies (mId, score): ", ", ", ""))
+
             // 保存到 mongodb
             saveToMongodb(uId, curRecommendations)
         }
@@ -112,18 +122,19 @@ object OnlineRecommender {
 
   private def saveToMongodb(uId: Int, curRecommendations: Array[(Int, Double)])(implicit config: Map[String, String]): Unit = {
     val onlineRecommendationsCollection = ConnectHelper.mongoClient
-      .getDatabase(config("mongo.bd"))
+      .getDatabase(config("mongo.db"))
       .getCollection(MONGODB_ONLINE_RECOMMENDATIONS_COLLECTION)
-    // 如果表中已经有了 uId 对应的数据，先删除
+    // 1. 如果表中已经有了 uId 对应的数据，先删除
     onlineRecommendationsCollection.findOneAndDelete(Filters.eq("uId", uId))
-    // 构建需要插入的新文档
+
+    // 2. 构建需要插入的新文档
     val doc = new Document()
       .append("uId", uId)
       .append("recommendations", curRecommendations.map { case (mid, score) =>
         new Document()
           .append("movieId", mid)
           .append("score", score)
-      }.toList)
+      }.toList.asJava)
 
     // 3. 执行插入操作
     onlineRecommendationsCollection.insertOne(doc)
@@ -167,7 +178,9 @@ object OnlineRecommender {
               + log(enhanceMap.getOrDefault(mId, 1))
               - log(weakenMap.getOrDefault(mId, 1))
           )
-      }.toArray
+      }
+      .toArray
+      .sortWith(_._2 > _._2)
   }
 
   private def getMovieSimilarScore(mid1: Int, mid2: Int, movieSimilarity: collection.Map[Int, Map[Int, Double]]): Double = {
@@ -212,7 +225,7 @@ object OnlineRecommender {
    */
   private def getUserRecentComment(uId: Int, USER_MAX_COMMENT_NUM: Int, jedis: Jedis): Array[(Int, Double)] = {
     // 从 redis 读取用户评分，redis里的数据保存在以 UID 为 key 的队列中，队列里面的 values 是一组评分 MID:SCORE
-    jedis.lrange("uid:" + uId, 0, USER_MAX_COMMENT_NUM - 1)
+    jedis.lrange("uId:" + uId, 0, USER_MAX_COMMENT_NUM - 1)
       .map { // 此处需要引入 java 转 scala 的库，因为 jedis 是 java 与 redis 的 api 接口
         x =>
           val parts = x.split(":")
